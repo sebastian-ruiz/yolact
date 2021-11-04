@@ -63,8 +63,6 @@ class Yolact(nn.Module):
         
         # override config properties
         if config_override is not None:
-            # for key, value in config_override.items():
-            #     self.cfg.key = value
             self.cfg.replace(config_override)
         
         print("cfg", self.cfg.print())
