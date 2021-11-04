@@ -17,7 +17,9 @@ from data.config import Config, mask_type
 #locally defined modules
 from layers.modules.prediction import PredictionModule
 from layers.modules.fast_mask_iou import FastMaskIoUNet
-from layers.modules.fpn import FPN 
+from layers.modules.fpn import FPN
+# from yolact import backbone
+import os
 
 # This is required for Pytorch 1.0.1 on Windows to initialize Cuda on some driver versions.
 # See the bug report here: https://github.com/pytorch/pytorch/issues/17108
@@ -44,7 +46,8 @@ class Yolact(nn.Module):
         - pred_aspect_ratios: A list of lists of aspect ratios with len(selected_layers) (see PredictionModule)
     """
 
-    def __init__(self, 
+    def __init__(self,
+                 config_override=None,
                  config_name="yolact_base_config",
                  device_type="gpu"
                  ):
@@ -57,6 +60,17 @@ class Yolact(nn.Module):
         ## set (custom) config
         cfg = set_cfg(str(config_name))
         self.cfg = cfg
+        
+        # override config properties
+        if config_override is not None:
+            # for key, value in config_override.items():
+            #     self.cfg.key = value
+            self.cfg.replace(config_override)
+        
+        print("cfg", self.cfg.print())
+        
+        print("\ndataset", self.cfg.dataset.print())
+        print("\nbackbone", self.cfg.backbone.print())
         
         ## GPU
         #TODO try half: net = net.half()
@@ -141,8 +155,12 @@ class Yolact(nn.Module):
             conf_thresh=cfg.nms_conf_thresh, nms_thresh=cfg.nms_thresh)
 
 
+        save_path = 'weights/'
+        if cfg.save_path is not None:
+            save_path = cfg.save_path
+        
         # set default backbone weights
-        self.init_weights(backbone_path='weights/' + cfg.backbone.path)
+        self.init_weights(backbone_path=os.path.join(save_path, cfg.backbone.path))
 
        
     def save_weights(self, path):
