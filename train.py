@@ -5,6 +5,8 @@ from utils.logger import Log
 from utils import timer
 from layers.modules import MultiBoxLoss
 from yolact import Yolact
+from data.config import set_cfg, set_dataset, cfg, MEANS
+from data.coco import COCODetection, detection_collate
 import os
 import sys
 import time
@@ -82,52 +84,7 @@ parser.add_argument('--no_autoscale', dest='autoscale', action='store_false',
 parser.set_defaults(keep_latest=False, log=True, log_gpu=False, interrupt=True, autoscale=True)
 args = parser.parse_args()
 
-if args.config is not None:
-    set_cfg(args.config)
-
-if args.dataset is not None:
-    set_dataset(args.dataset)
-
-if args.autoscale and args.batch_size != 8:
-    factor = args.batch_size / 8
-    if __name__ == '__main__':
-        print('Scaling parameters by %.2f to account for a batch size of %d.' % (factor, args.batch_size))
-
-    cfg.lr *= factor
-    cfg.max_iter //= factor
-    cfg.lr_steps = [x // factor for x in cfg.lr_steps]
-
-# Update training parameters from the config if necessary
-def replace(name):
-    if getattr(args, name) == None: setattr(args, name, getattr(cfg, name))
-replace('lr')
-replace('decay')
-replace('gamma')
-replace('momentum')
-
-# This is managed by set_lr
-cur_lr = args.lr
-
-if torch.cuda.device_count() == 0:
-    print('No GPUs detected. Exiting...')
-    exit(-1)
-
-if args.batch_size // torch.cuda.device_count() < 6:
-    if __name__ == '__main__':
-        print('Per-GPU batch size is less than the recommended limit for batch norm. Disabling batch norm.')
-    cfg.freeze_bn = True
-
 loss_types = ['B', 'C', 'M', 'P', 'D', 'E', 'S', 'I']
-
-if torch.cuda.is_available():
-    if args.cuda:
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    if not args.cuda:
-        print("WARNING: It looks like you have a CUDA device, but aren't " +
-              "using CUDA.\nRun with --cuda for optimal training speed.")
-        torch.set_default_tensor_type('torch.FloatTensor')
-else:
-    torch.set_default_tensor_type('torch.FloatTensor')
 
 class NetLoss(nn.Module):
     """
@@ -169,7 +126,58 @@ class CustomDataParallel(nn.DataParallel):
         
         return out
 
-def train():
+def train(yolact_net, override_args=None):
+    
+    # override the args from the ArgumentParser with override_args
+    for key, val in override_args.items():
+        # args[key] = val
+        setattr(args, key, val)
+    
+    # ! MOVED THESE LINES INTO train FUNCTION
+
+    if args.autoscale and args.batch_size != 8:
+        factor = args.batch_size / 8
+        if __name__ == '__main__':
+            print('Scaling parameters by %.2f to account for a batch size of %d.' % (factor, args.batch_size))
+
+        cfg.lr *= factor
+        cfg.max_iter //= factor
+        cfg.lr_steps = [x // factor for x in cfg.lr_steps]
+
+    # Update training parameters from the config if necessary
+    def replace(name):
+        if getattr(args, name) == None: setattr(args, name, getattr(cfg, name))
+    replace('lr')
+    replace('decay')
+    replace('gamma')
+    replace('momentum')
+
+    # This is managed by set_lr
+    cur_lr = args.lr
+
+    if torch.cuda.device_count() == 0:
+        print('No GPUs detected. Exiting...')
+        exit(-1)
+
+    if args.batch_size // torch.cuda.device_count() < 6:
+        if __name__ == '__main__':
+            print('Per-GPU batch size is less than the recommended limit for batch norm. Disabling batch norm.')
+        cfg.freeze_bn = True
+
+    if torch.cuda.is_available():
+        if args.cuda:
+            torch.set_default_tensor_type('torch.cuda.FloatTensor')
+        if not args.cuda:
+            print("WARNING: It looks like you have a CUDA device, but aren't " +
+                "using CUDA.\nRun with --cuda for optimal training speed.")
+            torch.set_default_tensor_type('torch.FloatTensor')
+    else:
+        torch.set_default_tensor_type('torch.FloatTensor')
+    
+    # if cfg.save_path has a custom path, then override the args.save_folder
+    if cfg.save_path is not None and cfg.save_path != "weights/":
+        args.save_folder = cfg.save_path
+    
     if not os.path.exists(args.save_folder):
         os.mkdir(args.save_folder)
 
@@ -182,9 +190,10 @@ def train():
         val_dataset = COCODetection(image_path=cfg.dataset.valid_images,
                                     info_file=cfg.dataset.valid_info,
                                     transform=BaseTransform(MEANS))
+        
+    # ! end - MOVED THESE LINES INTO train FUNCTION
 
     # Parallel wraps the underlying module, but when saving and loading we don't want that
-    yolact_net = Yolact()
     net = yolact_net
     net.train()
 
@@ -210,7 +219,7 @@ def train():
             args.start_iter = SavePath.from_str(args.resume).iteration
     else:
         print('Initializing weights...')
-        yolact_net.init_weights(backbone_path=args.save_folder + cfg.backbone.path)
+        yolact_net.init_weights(backbone_path=os.path.join(args.save_folder, cfg.backbone.path))
 
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.decay)
@@ -501,4 +510,12 @@ def setup_eval():
     eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
 
 if __name__ == '__main__':
-    train()
+    
+    if args.config is not None:
+        set_cfg(args.config)
+
+    if args.dataset is not None:
+        set_dataset(args.dataset)
+    
+    yolact_net = Yolact()
+    train(yolact_net, args)

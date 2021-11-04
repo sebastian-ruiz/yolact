@@ -1,4 +1,4 @@
-from data import COCODetection, get_label_map, MEANS, COLORS
+from data.coco import COCODetection, get_label_map
 from yolact import Yolact
 from utils.augmentations import BaseTransform, FastBaseTransform, Resize
 from utils.functions import MovingAverage, ProgressBar
@@ -8,7 +8,7 @@ from utils.functions import SavePath
 from layers.output_utils import postprocess, undo_image_transformation
 import pycocotools
 
-from data import cfg, set_cfg, set_dataset
+from data.config import cfg, set_cfg, set_dataset, MEANS, COLORS
 
 import numpy as np
 import torch
