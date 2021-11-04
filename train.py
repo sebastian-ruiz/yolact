@@ -132,8 +132,6 @@ def train(yolact_net, override_args=None):
     for key, val in override_args.items():
         # args[key] = val
         setattr(args, key, val)
-    
-    # ! MOVED THESE LINES INTO train FUNCTION
 
     if args.autoscale and args.batch_size != 8:
         factor = args.batch_size / 8
@@ -190,8 +188,6 @@ def train(yolact_net, override_args=None):
         val_dataset = COCODetection(image_path=cfg.dataset.valid_images,
                                     info_file=cfg.dataset.valid_info,
                                     transform=BaseTransform(MEANS))
-        
-    # ! end - MOVED THESE LINES INTO train FUNCTION
 
     # Parallel wraps the underlying module, but when saving and loading we don't want that
     net = yolact_net
