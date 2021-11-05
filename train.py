@@ -19,6 +19,7 @@ import torch.optim as optim
 import torch.backends.cudnn as cudnn
 import torch.nn.init as init
 import torch.utils.data as data
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import argparse
 import datetime
@@ -54,8 +55,6 @@ parser.add_argument('--gamma', default=None, type=float,
                     help='For each lr step, what to multiply the lr by. Leave as None to read this from the config.')
 parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models.')
-parser.add_argument('--log_folder', default='logs/',
-                    help='Directory for saving logs.')
 parser.add_argument('--config', default=None,
                     help='The config object to use.')
 parser.add_argument('--save_interval', default=10000, type=int,
@@ -85,6 +84,9 @@ parser.set_defaults(keep_latest=False, log=True, log_gpu=False, interrupt=True, 
 args = parser.parse_args()
 
 loss_types = ['B', 'C', 'M', 'P', 'D', 'E', 'S', 'I']
+
+better_names = {'B':'box_localization', 'C':'class_confidence', 'M':'mask', 'S': 'semantic_segmentation', 'T': 'total'}
+
 
 class NetLoss(nn.Module):
     """
@@ -180,6 +182,16 @@ def train(yolact_net, override_args=None):
     
     if not os.path.exists(args.save_folder):
         os.mkdir(args.save_folder)
+        
+    # create folder for training_output
+    save_training_folder = os.path.join(args.save_folder, 'training_' + datetime.datetime.today().strftime('%Y-%m-%d-%H꞉%M'))
+    if os.path.exists(save_training_folder) and Path(save_training_folder).is_dir():
+        print("training folder already exists", save_training_folder)
+        sys.exit()
+    else:
+        os.mkdir(save_training_folder)
+        
+    args.log_folder = os.path.join(save_training_folder, 'logs')
 
     dataset = COCODetection(image_path=cfg.dataset.train_images,
                             info_file=cfg.dataset.train_info,
@@ -196,6 +208,9 @@ def train(yolact_net, override_args=None):
     # Parallel wraps the underlying module, but when saving and loading we don't want that
     net = yolact_net
     net.train()
+    
+    # initiate tensorboard writer
+    writer = SummaryWriter(log_dir=args.log_folder)
 
     if args.log:
         log = Log(cfg.name, args.log_folder, dict(args._get_kwargs()),
@@ -261,7 +276,7 @@ def train(yolact_net, override_args=None):
                                   pin_memory=True)
     
     
-    save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(root=args.save_folder)
+    save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(root=save_training_folder)
     time_avg = MovingAverage()
 
     global loss_types # Forms the print order
@@ -359,6 +374,8 @@ def train(yolact_net, override_args=None):
                         lr=round(cur_lr, 10), elapsed=elapsed)
 
                     log.log_gpu_stats = args.log_gpu
+                    
+                    writer.add_scalars('train/iter', { better_names[key] : value for key, value in loss_info.items() }, iteration)
                 
                 iteration += 1
 
@@ -377,10 +394,12 @@ def train(yolact_net, override_args=None):
             # This is done per epoch
             if args.validation_epoch > 0:
                 if epoch % args.validation_epoch == 0 and epoch > 0:
-                    compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
-        
+                    compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None, writer)
+
+            writer.flush()
+            
         # Compute validation mAP after training is finished
-        compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
+        compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None, writer)
     except KeyboardInterrupt:
         if args.interrupt:
             print('Stopping early. Saving network...')
@@ -389,9 +408,12 @@ def train(yolact_net, override_args=None):
             SavePath.remove_interrupt(args.save_folder)
             
             yolact_net.save_weights(save_path(epoch, repr(iteration) + '_interrupt'))
+            writer.close()
+            
         exit()
 
     yolact_net.save_weights(save_path(epoch, iteration))
+    writer.close()
 
 
 def set_lr(optimizer, new_lr):
@@ -491,7 +513,7 @@ def compute_validation_loss(net, data_loader, criterion):
         loss_labels = sum([[k, losses[k]] for k in loss_types if k in losses], [])
         print(('Validation ||' + (' %s: %.3f |' * len(losses)) + ')') % tuple(loss_labels), flush=True)
 
-def compute_validation_map(epoch, iteration, yolact_net, dataset, log:Log=None):
+def compute_validation_map(epoch, iteration, yolact_net, dataset, log:Log=None, writer=None):
     with torch.no_grad():
         yolact_net.eval()
         
@@ -503,6 +525,10 @@ def compute_validation_map(epoch, iteration, yolact_net, dataset, log:Log=None):
 
         if log is not None:
             log.log('val', val_info, elapsed=(end - start), epoch=epoch, iter=iteration)
+
+        if writer is not None:
+            writer.add_scalars("val/box", { str(key) : value for key, value in val_info["box"].items() }, epoch) 
+            writer.add_scalars("val/mask", { str(key) : value for key, value in val_info["mask"].items() }, epoch)
 
         yolact_net.train()
 
