@@ -151,14 +151,9 @@ class Yolact(nn.Module):
         # For use in evaluation
         self.detect = Detect(cfg.num_classes, bkg_label=0, top_k=cfg.nms_top_k,
             conf_thresh=cfg.nms_conf_thresh, nms_thresh=cfg.nms_thresh)
-
-
-        save_path = 'weights/'
-        if cfg.save_path is not None:
-            save_path = cfg.save_path
         
         # set default backbone weights
-        self.init_weights(backbone_path=os.path.join(save_path, cfg.backbone.path))
+        self.init_weights(backbone_path=os.path.join(cfg.save_path, cfg.backbone.path))
 
        
     def save_weights(self, path):
