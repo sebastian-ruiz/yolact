@@ -1,3 +1,4 @@
+from tokenize import String
 from data.coco import COCODetection, get_label_map
 from yolact import Yolact
 from utils.augmentations import BaseTransform, FastBaseTransform, Resize
@@ -127,33 +128,36 @@ def parse_args(argv=None):
     
     if args.seed is not None:
         random.seed(args.seed)
+        
+    return args
 
 iou_thresholds = [x / 100 for x in range(50, 100, 5)]
 coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 
-def prep_display(dets_out, img, h=None, w=None, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str='', override_args:Config=None):
-    """
-    process image by the network and display all the detections, features as requested by args (command line). 
-
-    Note: If undo_transform=False then h,w are allowed to be None.
-
-    @param override_args - (Config, default None) arguments, overrides args parsed from command-line. Useful when calling as API, where we
-    don't have cmd args. 
-    """
-    if undo_transform:
-        assert w is not None and h is not None, "with undo_transform=True, w,h params must be specified!"
-        img_numpy = undo_image_transformation(img, w, h)
-        img_gpu = torch.Tensor(img_numpy).cuda()
-    else:
-        img_gpu = img / 255.0
-        h, w, _ = img.shape
-
-    global args
+def infer(net, img, override_args:Config=None):
+    if isinstance(img, str):
+        img = cv2.imread(img)
+    
+    with torch.no_grad():
+        frame = torch.from_numpy(img).cuda().float()
+        batch = FastBaseTransform()(frame.unsqueeze(0))
+        dets_out = net(batch)
+        
+    args = parse_args()
     if override_args is not None:
       #override the command line args by the given arguments (type Config)
       args = override_args
+    
+    h, w, _ = img.shape
+    classes, scores, boxes, masks = postprocessing(dets_out, w, h, args)
+    
+    return frame, classes, scores, boxes, masks
+
+def postprocessing(dets_out, w, h, args):
+    
+    cfg.mask_proto_debug = args.mask_proto_debug
     
     with timer.env('Postprocess'):
         save = cfg.rescore_bbox
@@ -162,7 +166,7 @@ def prep_display(dets_out, img, h=None, w=None, undo_transform=True, class_color
                                         crop_masks        = args.crop,
                                         score_threshold   = args.score_threshold)
         cfg.rescore_bbox = save
-
+    
     with timer.env('Copy'):
         idx = t[1].argsort(0, descending=True)[:args.top_k]
         
@@ -170,13 +174,31 @@ def prep_display(dets_out, img, h=None, w=None, undo_transform=True, class_color
             # Masks are drawn on the GPU, so don't copy
             masks = t[3][idx]
         classes, scores, boxes = [x[idx].cpu().numpy() for x in t[:3]]
-
+    
     num_dets_to_consider = min(args.top_k, classes.shape[0])
     for j in range(num_dets_to_consider):
         if scores[j] < args.score_threshold:
             num_dets_to_consider = j
             break
+        
+    if args.display_masks and cfg.eval_mask_branch and num_dets_to_consider > 0:
+        # After this, mask is of size [num_dets, h, w, 1]
+        masks = masks[:num_dets_to_consider, :, :, None]
+        
+    return classes, scores, boxes, masks
 
+def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alpha=0.45, fps_str='', override_args:Config=None):
+    
+    img_gpu = img / 255.0
+    h, w, _ = img.shape
+    
+    undo_transform = False
+    num_dets_to_consider = min(args.top_k, classes.shape[0])
+    for j in range(num_dets_to_consider):
+        if scores[j] < args.score_threshold:
+            num_dets_to_consider = j
+            break
+    
     # Quick and dirty lambda for selecting the color for a particular index
     # Also keeps track of a per-gpu color cache for maximum speed
     def get_color(j, on_gpu=None):
@@ -200,7 +222,7 @@ def prep_display(dets_out, img, h=None, w=None, undo_transform=True, class_color
     # I wish I had access to OpenGL or Vulkan but alas, I guess Pytorch tensor operations will have to suffice
     if args.display_masks and cfg.eval_mask_branch and num_dets_to_consider > 0:
         # After this, mask is of size [num_dets, h, w, 1]
-        masks = masks[:num_dets_to_consider, :, :, None]
+        # masks = masks[:num_dets_to_consider, :, :, None] # this is already applied in infer()
         
         # Prepare the RGB images for each mask given their color (size [num_dets, h, w, 1])
         colors = torch.cat([get_color(j, on_gpu=img_gpu.device.index).view(1, 1, 1, 3) for j in range(num_dets_to_consider)], dim=0)
@@ -254,7 +276,7 @@ def prep_display(dets_out, img, h=None, w=None, undo_transform=True, class_color
             if args.display_bboxes:
                 cv2.rectangle(img_numpy, (x1, y1), (x2, y2), color, 1)
 
-            if args.display_text:
+            if args.display_text:                    
                 _class = cfg.dataset.class_names[classes[j]]
                 text_str = '%s: %.2f' % (_class, score) if args.display_scores else _class
 
@@ -272,6 +294,19 @@ def prep_display(dets_out, img, h=None, w=None, undo_transform=True, class_color
             
     
     return img_numpy
+
+
+def prep_display(dets_out, img, h=None, w=None, class_color=False, mask_alpha=0.45, fps_str='', override_args:Config=None):
+    args = parse_args()
+    if override_args is not None:
+      #override the command line args by the given arguments (type Config)
+      args = override_args
+      
+    h, w, _ = img.shape
+    classes, scores, boxes, masks = postprocessing(dets_out, w, h, args)
+
+    return annotate_img(img, classes, scores, boxes, masks, class_color, mask_alpha, fps_str, override_args=override_args)
+
 
 def prep_benchmark(dets_out, h, w):
     with timer.env('Postprocess'):
@@ -604,7 +639,7 @@ def badhash(x):
     x =  ((x >> 16) ^ x) & 0xFFFFFFFF
     return x
 
-def evalimage(net:Yolact, path:str, save_path:str=None):
+def evalimage(net:Yolact, path:str, save_path:str=None, override_args=None):
     """
     Evaluate a single image given:
     @argument net - Yolact object, the network
@@ -613,23 +648,23 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     @argument args.display - (uses the global congig --display) display the image
 
     @return the labeled image as numpy array
-    """
+    """ 
     with torch.no_grad():
-      frame = torch.from_numpy(cv2.imread(path)).cuda().float()
-      batch = FastBaseTransform()(frame.unsqueeze(0))
-      preds = net(batch)
+        frame = torch.from_numpy(cv2.imread(path)).cuda().float()
+        batch = FastBaseTransform()(frame.unsqueeze(0))
+        preds = net(batch)
 
-      img_numpy = prep_display(preds, frame, undo_transform=False, override_args=args)
-    
-      if args.display:
-        plt.imshow(cv2.cvtColor(img_numpy, cv2.COLOR_BGR2RGB)) #matplotlib's imshow() needs image converted from BGR(cv2) to RGB(pyplot)
-        plt.title(path)
-        plt.show()
+        img_numpy = prep_display(preds, frame, override_args=override_args)
 
-      if save_path is not None:
-        cv2.imwrite(save_path, img_numpy)
+        if args.display:
+            plt.imshow(cv2.cvtColor(img_numpy, cv2.COLOR_BGR2RGB)) #matplotlib's imshow() needs image converted from BGR(cv2) to RGB(pyplot)
+            plt.title(path)
+            plt.show()
 
-      return img_numpy
+        if save_path is not None:
+            cv2.imwrite(save_path, img_numpy)
+
+        return img_numpy
 
 
 def evalimages(net:Yolact, input_folder:str, output_folder:str):
@@ -732,7 +767,7 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
     def prep_frame(inp, fps_str):
         with torch.no_grad():
             frame, preds = inp
-            return prep_display(preds, frame, undo_transform=False, class_color=True, fps_str=fps_str, override_args=args)
+            return prep_display(preds, frame, class_color=True, fps_str=fps_str, override_args=args)
 
     frame_buffer = Queue()
     video_fps = 0
