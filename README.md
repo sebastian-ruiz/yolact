@@ -1,3 +1,52 @@
+
+# YOLACT fork with API, Tensorboard and more...
+
+Additional features:
+
+- GPU and CPU support
+- Train API
+- Eval API
+- Tensorboard support
+- Training folder contains timestamp in folder name
+
+## Installation
+
+Clone repository to yolact_pkg and run:
+```bash
+cd yolact_pkg
+python -m pip install -e .
+```
+
+## Usage
+
+Look at `example.py` for how to use it. As a brief overview, this is how training and inference can be used.
+
+To train:
+
+```python
+config = {
+        'name': 'yolact_base',
+        ...
+}
+training_args = {
+    "batch_size": 8,
+    "save_interval": 100,
+}
+yolact = Yolact(config)
+train(yolact, training_args)
+```
+
+To run inference:
+
+```python
+yolact.eval()
+yolact.load_weights("./yolact_weights/training_2021-11-05-13꞉09/yolact_base_36_2200.pth")
+
+frame, classes, scores, boxes, masks = infer(yolact, ".data/coco/train_images/00000.jpg")
+annotated_img = annotate_img(frame, classes, scores, boxes, masks)
+cv2.imshow('out',annotated_img)
+```
+
 # **Y**ou **O**nly **L**ook **A**t **C**oefficien**T**s
 ```
     ██╗   ██╗ ██████╗ ██╗      █████╗  ██████╗████████╗
