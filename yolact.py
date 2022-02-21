@@ -9,6 +9,7 @@ from data.config import mask_type, set_cfg
 from layers import Detect
 from layers.interpolate import InterpolateModule
 from backbone import construct_backbone
+import eval
 
 from utils import timer
 from utils.functions import MovingAverage, make_net
@@ -65,10 +66,13 @@ class Yolact(nn.Module):
         if config_override is not None:
             self.cfg.replace(config_override)
         
-        print("cfg", self.cfg.print())
+        # eval args
+        self.eval_args = eval.parse_args()
         
-        print("\ndataset", self.cfg.dataset.print())
-        print("\nbackbone", self.cfg.backbone.print())
+        # override with args from cfg if present
+        for key, val in self.cfg.__dict__.items():
+            if key in self.eval_args.__dict__:
+                self.eval_args.__setattr__(key, val)
         
         ## GPU
         #TODO try half: net = net.half()
@@ -363,6 +367,8 @@ class Yolact(nn.Module):
 
             return self.detect(pred_outs, self)
 
+    def infer(self, img):
+        return eval.infer(self, img, override_args=self.eval_args)
 
 
 

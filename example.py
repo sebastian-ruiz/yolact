@@ -4,7 +4,7 @@
 from yolact_pkg.data.config import Config
 from yolact_pkg.yolact import Yolact
 from yolact_pkg.train import train
-from yolact_pkg.eval import infer, annotate_img
+from yolact_pkg.eval import annotate_img
 
 import cv2
 import torch
@@ -48,6 +48,10 @@ if __name__ == '__main__':
         'max_size': 550,
         
         'save_path': 'yolact_weights/',
+        
+        # we can override args used in eval.py:        
+        'score_threshold': 0.1,
+        'top_k': 10
     }
     
     # we can override training args here:
@@ -73,8 +77,8 @@ if __name__ == '__main__':
     yolact.eval()
     yolact.load_weights("./yolact_weights/training_2021-11-05-13꞉09/yolact_base_36_2200.pth")
     
-    frame, classes, scores, boxes, masks = infer(yolact, ".data/coco/train_images/00000.jpg")
-    # or: frame, classes, scores, boxes, masks = infer(yolact, cv2.imread(".data/coco/train_images/00000.jpg"))
+    frame, classes, scores, boxes, masks = yolact.infer(".data/coco/train_images/00000.jpg")
+    # or: frame, classes, scores, boxes, masks = yolact.infer(yolact, cv2.imread(".data/coco/train_images/00000.jpg"))
     
     annotated_img = annotate_img(frame, classes, scores, boxes, masks)
     
