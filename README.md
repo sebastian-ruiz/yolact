@@ -26,7 +26,7 @@ To train:
 ```python
 config = {
         'name': 'yolact_base',
-        ...
+        # ... see example.py for config options
 }
 training_args = {
     "batch_size": 8,
@@ -42,7 +42,7 @@ To run inference:
 yolact.eval()
 yolact.load_weights("./yolact_weights/training_2021-11-05-13꞉09/yolact_base_36_2200.pth")
 
-frame, classes, scores, boxes, masks = infer(yolact, ".data/coco/train_images/00000.jpg")
+frame, classes, scores, boxes, masks = yolact.infer(".data/coco/train_images/00000.jpg")
 annotated_img = annotate_img(frame, classes, scores, boxes, masks)
 cv2.imshow('out',annotated_img)
 ```
