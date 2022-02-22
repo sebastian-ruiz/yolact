@@ -24,7 +24,8 @@ import os
 
 # This is required for Pytorch 1.0.1 on Windows to initialize Cuda on some driver versions.
 # See the bug report here: https://github.com/pytorch/pytorch/issues/17108
-torch.cuda.current_device()
+if os.name == 'nt' and torch.cuda.is_available():
+    torch.cuda.current_device()
 
 
 class Yolact(nn.Module):
