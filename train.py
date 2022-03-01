@@ -271,12 +271,20 @@ def train(yolact_net, override_args=None):
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
     
+    data_loader_val = data.DataLoader(val_dataset, args.batch_size,
+                            num_workers=args.num_workers,
+                            shuffle=True, collate_fn=detection_collate,
+                            # generator=torch.Generator(device='cuda'), 
+                            pin_memory=True)
+   
     
     save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(root=save_training_folder)
     time_avg = MovingAverage()
 
     global loss_types # Forms the print order
     loss_avgs  = { k: MovingAverage(100) for k in loss_types }
+    
+    first_run = True
 
     print('Begin training!')
     print()
@@ -386,6 +394,11 @@ def train(yolact_net, override_args=None):
                         if args.keep_latest_interval <= 0 or iteration % args.keep_latest_interval != args.save_interval:
                             print('Deleting old save...')
                             os.remove(latest)
+                            
+            # This is done per epoch
+            if args.log:
+                writer.add_scalars('train/epoch', { better_names[key] : value for key, value in loss_info.items() }, epoch)
+                compute_validation_loss(epoch, net, data_loader_val, log if args.log else None, writer)
             
             # This is done per epoch
             if args.validation_epoch > 0:
@@ -395,6 +408,7 @@ def train(yolact_net, override_args=None):
             writer.flush()
             
         # Compute validation mAP after training is finished
+        compute_validation_loss(epoch, net, data_loader_val, log if args.log else None, writer)
         compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None, writer)
     except KeyboardInterrupt:
         if args.interrupt:
@@ -476,38 +490,51 @@ def no_inf_mean(x:torch.Tensor):
     else:
         return x.mean()
 
-def compute_validation_loss(net, data_loader, criterion):
+
+def compute_validation_loss(epoch, net, data_loader_val, log:Log=None, writer=None):
+    #Calculates the loss on the validation dataset.
+    start = time.time()
+    print()    
+    print('Calculating validaton losses, this may take a while...', flush=True)
+
+    # net.eval() # Don't switch to eval mode because we want to get losses
+
     global loss_types
-
+    iter_losses = {}
     with torch.no_grad():
-        losses = {}
-        
-        # Don't switch to eval mode because we want to get losses
-        iterations = 0
-        for datum in data_loader:
-            images, targets, masks, num_crowds = prepare_data(datum)
-            out = net(images)
 
-            wrapper = ScatterWrapper(targets, masks, num_crowds)
-            _losses = criterion(out, wrapper, wrapper.make_mask())
+        iterations = 0
+        for datum in data_loader_val:
+            # _losses = yolact_net.forward(datum)
+            print("val iteration", iterations, len(datum[0]))
             
-            for k, v in _losses.items():
-                v = v.mean().item()
-                if k in losses:
-                    losses[k] += v
-                else:
-                    losses[k] = v
+            # if the batch is smaller than the batch size, the forward pass crashes, don't know why this doesn't happen during training.
+            if len(datum[0]) < args.batch_size:
+                break
+            
+            _losses = net(datum)
+            for k,v in _losses.items():
+                iter_losses.setdefault(k, []).append(v)
 
             iterations += 1
             if args.validation_size <= iterations * args.batch_size:
                 break
         
-        for k in losses:
-            losses[k] /= iterations
-            
+    losses = { k: torch.mean(torch.stack(v), dim=0) for k,v in iter_losses.items() }
+    losses["T"] = sum([losses[k] for k in losses])
+    print("losses", losses)
+    
+    end = time.time()
+    if writer is not None:        
+        precision = 5
+        loss_info = {k: round(losses[k].item(), precision) for k in losses}
+                    
+        writer.add_scalars('val/epoch', { better_names[key] : value for key, value in loss_info.items() }, epoch)
         
-        loss_labels = sum([[k, losses[k]] for k in loss_types if k in losses], [])
-        print(('Validation ||' + (' %s: %.3f |' * len(losses)) + ')') % tuple(loss_labels), flush=True)
+    if log is not None:
+        global cur_lr
+        log.log('val', loss=loss_info, epoch=epoch, elapsed=(end - start))
+        
 
 def compute_validation_map(epoch, iteration, yolact_net, dataset, log:Log=None, writer=None):
     with torch.no_grad():
