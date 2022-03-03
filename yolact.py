@@ -79,6 +79,12 @@ class Yolact(nn.Module):
         #TODO try half: net = net.half()
         assert(device_type == "gpu" or device_type == "cpu" or device_type == "tpu")
         assert(device_type != "tpu"), "TPU not yet supported!"
+        
+        if device_type == "gpu" and not torch.cuda.is_available():
+            device_type = "cpu"
+            self.eval_args.__setattr__("cuda", False)
+            print("\n", "="*40, "\nPytorch: CUDA is unavailable! Using CPU instead!\n", "="*40, "\n")
+
         self.device_type = device_type
         if self.device_type == "gpu":
           self.cuda()
@@ -167,8 +173,11 @@ class Yolact(nn.Module):
     
     def load_weights(self, path):
         """ Loads weights from a compressed save file. """
-        state_dict = torch.load(path)
-
+        if self.device_type == "cpu":
+            state_dict = torch.load(path, map_location=torch.device('cpu'))
+        else: # gpu
+            state_dict = torch.load(path)
+        
         # For backward compatability, remove these (the new variable is called layers)
         for key in list(state_dict.keys()):
             if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):

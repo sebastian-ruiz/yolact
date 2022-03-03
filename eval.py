@@ -121,7 +121,8 @@ def parse_args(argv=None):
                         emulate_playback=False)
 
     global args
-    args = parser.parse_args(argv)
+    # args = parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
 
     if args.output_web_json:
         args.output_coco_json = True
@@ -140,15 +141,18 @@ def infer(net, img, override_args:Config=None):
     if isinstance(img, str):
         img = cv2.imread(img)
     
-    with torch.no_grad():
-        frame = torch.from_numpy(img).cuda().float()
-        batch = FastBaseTransform()(frame.unsqueeze(0))
-        dets_out = net(batch)
-        
     args = parse_args()
     if override_args is not None:
       #override the command line args by the given arguments (type Config)
       args = override_args
+    
+    with torch.no_grad():
+        if args.cuda:
+            frame = torch.from_numpy(img).cuda().float()
+        else:
+            frame = torch.from_numpy(np.array(img)).cpu().float()
+        batch = FastBaseTransform(args.cuda)(frame.unsqueeze(0))
+        dets_out = net(batch)
     
     h, w, _ = img.shape
     classes, scores, boxes, masks = postprocessing(dets_out, w, h, args)
