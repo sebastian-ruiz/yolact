@@ -57,7 +57,7 @@ if __name__ == '__main__':
     # we can override training args here:
     training_args_override = {
         "batch_size": 8,
-        "save_interval": 100,
+        "save_interval": -1, # -1 for saving only at end of the epoch
         # "resume": 
     }
     

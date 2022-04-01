@@ -57,8 +57,8 @@ parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models.')
 parser.add_argument('--config', default=None,
                     help='The config object to use.')
-parser.add_argument('--save_interval', default=10000, type=int,
-                    help='The number of iterations between saving the model.')
+parser.add_argument('--save_interval', default=-1, type=int,
+                    help='The number of iterations between saving the model. -1 will save only at end of the epoch.')
 parser.add_argument('--validation_size', default=5000, type=int,
                     help='The number of images to use for validation.')
 parser.add_argument('--validation_epoch', default=2, type=int,
@@ -383,7 +383,7 @@ def train(yolact_net, override_args=None):
                 
                 iteration += 1
 
-                if iteration % args.save_interval == 0 and iteration != args.start_iter:
+                if args.save_interval != -1 and (iteration % args.save_interval == 0 and iteration != args.start_iter):
                     if args.keep_latest:
                         latest = SavePath.get_latest(args.save_folder, cfg.name)
 
@@ -394,6 +394,19 @@ def train(yolact_net, override_args=None):
                         if args.keep_latest_interval <= 0 or iteration % args.keep_latest_interval != args.save_interval:
                             print('Deleting old save...')
                             os.remove(latest)
+
+            # This is done per epoch
+            if args.save_interval == -1:
+                if args.keep_latest:
+                        latest = SavePath.get_latest(args.save_folder, cfg.name)
+
+                print('Saving state, epoch:', epoch)
+                yolact_net.save_weights(save_path(epoch, iteration))
+
+                if args.keep_latest and latest is not None:
+                    if args.keep_latest_interval <= 0 or iteration % args.keep_latest_interval != args.save_interval:
+                        print('Deleting old save...')
+                        os.remove(latest)
                             
             # This is done per epoch
             if args.log:
