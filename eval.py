@@ -193,6 +193,11 @@ def postprocessing(dets_out, w, h, args):
 
 def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alpha=0.45, fps_str='', override_args:Config=None):
     
+    args = parse_args()
+    if override_args is not None:
+        #override the command line args by the given arguments (type Config)
+        args = override_args
+
     img_gpu = img / 255.0
     h, w, _ = img.shape
     
@@ -219,6 +224,9 @@ def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alp
             if on_gpu is not None:
                 color = torch.Tensor(color).to(on_gpu).float() / 255.
                 color_cache[on_gpu][color_idx] = color
+            else:
+                color = torch.Tensor(color).float() / 255.
+
             return color
 
     # First, draw the masks on the GPU where we can do it really fast
@@ -229,7 +237,11 @@ def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alp
         # masks = masks[:num_dets_to_consider, :, :, None] # this is already applied in infer()
         
         # Prepare the RGB images for each mask given their color (size [num_dets, h, w, 1])
-        colors = torch.cat([get_color(j, on_gpu=img_gpu.device.index).view(1, 1, 1, 3) for j in range(num_dets_to_consider)], dim=0)
+        if torch.cuda.is_available():
+            colors = torch.cat([get_color(j, on_gpu=img_gpu.device.index).view(1, 1, 1, 3) for j in range(num_dets_to_consider)], dim=0)
+        else:
+            colors = torch.cat([get_color(j).view(1, 1, 1, 3) for j in range(num_dets_to_consider)], dim=0)
+
         masks_color = masks.repeat(1, 1, 1, 3) * colors * mask_alpha
 
         # This is 1 everywhere except for 1-mask_alpha where the mask is
@@ -274,7 +286,8 @@ def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alp
     if args.display_text or args.display_bboxes:
         for j in reversed(range(num_dets_to_consider)):
             x1, y1, x2, y2 = boxes[j, :]
-            color = get_color(j)
+            color = get_color(j).cpu().detach().numpy() *255
+            color = [int(i) for i in color]
             score = scores[j]
 
             if args.display_bboxes:
