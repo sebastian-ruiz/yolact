@@ -11,8 +11,9 @@ Additional features:
 
 ## Installation
 
-Clone repository to yolact_pkg and run:
+Clone repository and install with pip, as follows:
 ```bash
+git clone https://github.com/sebastian-ruiz/yolact yolact_pkg
 cd yolact_pkg
 python -m pip install -e .
 ```
