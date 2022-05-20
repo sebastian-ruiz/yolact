@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="yolact", # Replace with your own username
+    name="yolact_pkg", # Replace with your own username
     version="1.2.0",
     author="Daniel Bolya",
     author_email="author@example.com",
