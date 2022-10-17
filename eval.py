@@ -474,7 +474,7 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
             box_scores = list(scores[0].cpu().numpy().astype(float))
             mask_scores = list(scores[1].cpu().numpy().astype(float))
         else:
-            scores = list(scores.cpu().numpy().astype(float))
+            scores = list(scores.detach().cpu().numpy().astype(float))
             box_scores = scores
             mask_scores = scores
         masks = masks.view(-1, h*w).cuda()
@@ -942,7 +942,7 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
     
     cleanup_and_exit()
 
-def evaluate(net:Yolact, dataset, train_mode=False):
+def evaluate(net:Yolact, dataset, train_mode=False):    
     net.eval()
 
     net.detect.use_fast_nms = args.fast_nms
