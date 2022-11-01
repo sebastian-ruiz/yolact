@@ -6,6 +6,7 @@ from utils.functions import MovingAverage, ProgressBar
 from layers.box_utils import jaccard, center_size, mask_iou
 from utils import timer
 from utils.functions import SavePath
+from utils.obb import get_obb_from_mask
 from layers.output_utils import postprocess, undo_image_transformation
 import pycocotools
 
@@ -39,7 +40,9 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-def parse_args(argv=None):
+def parse_args(argv=[]):
+    print("eval.py: argv", argv)
+    
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
     parser.add_argument('--trained_model',
@@ -121,8 +124,8 @@ def parse_args(argv=None):
                         emulate_playback=False)
 
     global args
-    # args = parser.parse_args(argv)
-    args, unknown = parser.parse_known_args(argv)
+    args = parser.parse_args(args=argv)
+    # args, unknown = parser.parse_known_args(argv)
 
     if args.output_web_json:
         args.output_coco_json = True
@@ -447,6 +450,17 @@ def _bbox_iou(bbox1, bbox2, iscrowd=False):
         ret = jaccard(bbox1, bbox2, iscrowd)
     return ret.cpu()
 
+def rot_measure(mask_a, mask_b):
+    """
+    Computes the rotation offset between the two masks
+    """
+    _, _, rot_a = get_obb_from_mask(mask_a)
+    _, _, rot_b = get_obb_from_mask(mask_b)
+
+    rot_diff = np.abs(rot_a - rot_b)
+
+    return rot_a, rot_b, rot_diff
+
 def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, detections:Detections=None):
     """ Returns a list of APs for this image, with each element being for a class  """
     if not args.output_coco_json:
@@ -515,8 +529,9 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                      lambda i: box_scores[i], box_indices),
             ('mask', lambda i,j: mask_iou_cache[i, j].item(),
                      lambda i,j: crowd_mask_iou_cache[i,j].item(),
-                     lambda i: mask_scores[i], mask_indices)
+                     lambda i: mask_scores[i], mask_indices),
         ]
+        #! we can add another iou type here for rotation
 
     timer.start('Main loop')
     for _class in set(classes + gt_classes):
@@ -571,6 +586,36 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                         # begin with, but accuracy is of the utmost importance.
                         if not matched_crowd:
                             ap_obj.push(score_func(i), False)
+
+                    if max_match_idx >= 0 and iou_type == "mask" and iouIdx == 0:
+                        # we get the best mask iou pair, and compute the rotation difference on this.
+                        # we only compute over the true positives 
+
+                        print("_class", _class)
+                        print("iou_threshold", iou_threshold)
+                        print("i", i)
+                        print("best matching gt: (max_match_idx)", max_match_idx) # best j
+                        print("max_iou_found", max_iou_found)
+                        
+                        # print("gt_used", gt_used)
+
+                        # todo: now compute rotation difference between mask i and mask max_match_idx
+                        masks_np = masks.view(-1, h, w).detach().cpu().numpy().astype("uint8")
+                        gt_masks_np = gt_masks.view(-1, h, w).detach().cpu().numpy().astype("uint8")
+
+                        mask_i = masks_np[i]
+                        mask_j = gt_masks_np[max_match_idx]
+
+                        rot_i, rot_j, rot_diff = rot_measure(mask_i, mask_j)
+
+                        # todo: rot_diff is sometimes 0.0, why?
+
+                        print("rot_diff", rot_diff)
+
+                        ap_obj_rot = ap_data['rot'][iouIdx][_class]
+                        ap_obj_rot.push(rot_diff, True)
+
+
     timer.stop('Main loop')
 
 
@@ -981,7 +1026,8 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         # Index ap_data[type][iouIdx][classIdx]
         ap_data = {
             'box' : [[APDataObject() for _ in cfg.dataset.class_names] for _ in iou_thresholds],
-            'mask': [[APDataObject() for _ in cfg.dataset.class_names] for _ in iou_thresholds]
+            'mask': [[APDataObject() for _ in cfg.dataset.class_names] for _ in iou_thresholds],
+            'rot': [[APDataObject() for _ in cfg.dataset.class_names] for _ in iou_thresholds]
         }
         detections = Detections()
     else:
@@ -1012,6 +1058,8 @@ def evaluate(net:Yolact, dataset, train_mode=False):
 
             with timer.env('Load Data'):
                 img, gt, gt_masks, h, w, num_crowd = dataset.pull_item(image_idx)
+                
+                #! img processed here
 
                 # Test flag, do not upvote
                 if cfg.mask_proto_debug:
@@ -1031,6 +1079,7 @@ def evaluate(net:Yolact, dataset, train_mode=False):
             elif args.benchmark:
                 prep_benchmark(preds, h, w)
             else:
+                #! compute APs
                 prep_metrics(ap_data, preds, img, gt, gt_masks, h, w, num_crowd, dataset.ids[image_idx], detections)
             
             # First couple of images take longer because we're constructing the graph.
@@ -1107,7 +1156,53 @@ def calc_map(ap_data):
     
     # Put in a prettier format so we can serialize it to json during training
     all_maps = {k: {j: round(u, 2) for j, u in v.items()} for k, v in all_maps.items()}
-    return all_maps
+    return all_maps, ap_data
+
+
+def calc_map_classwise(net:Yolact, ap_data):
+    print('Calculating mAP...')
+    aps = [{'box': [], 'mask': []} for _ in iou_thresholds]
+
+    all_class_maps = []
+    for _class in range(len(net.cfg.dataset.class_names)):
+        
+        for iou_idx in range(len(iou_thresholds)):
+            for iou_type in ('box', 'mask'):
+                ap_obj = ap_data[iou_type][iou_idx][_class]
+
+                if not ap_obj.is_empty():
+                    aps[iou_idx][iou_type].append(ap_obj.get_ap())
+
+        class_map = {'box': OrderedDict(), 'mask': OrderedDict()}
+
+        # Looking back at it, this code is really hard to read :/
+        for iou_type in ('box', 'mask'):
+            class_map[iou_type]['all'] = 0 # Make this first in the ordereddict
+            for i, threshold in enumerate(iou_thresholds):
+                mAP = sum(aps[i][iou_type]) / len(aps[i][iou_type]) * 100 if len(aps[i][iou_type]) > 0 else 0
+                class_map[iou_type][int(threshold*100)] = mAP
+            class_map[iou_type]['all'] = (sum(class_map[iou_type].values()) / (len(class_map[iou_type].values())-1))
+        
+        print("class:", net.cfg.dataset.class_names[_class])
+        print_maps(class_map)
+        
+        # Put in a prettier format so we can serialize it to json during training
+        class_map = {k: {j: round(u, 2) for j, u in v.items()} for k, v in class_map.items()}
+        all_class_maps.append(class_map)
+    
+    # work out averages for rotation difference
+    for _class in range(len(net.cfg.dataset.class_names)):
+        iou_idx = 0
+        iou_type = 'rot'
+        
+        ap_obj = ap_data[iou_type][iou_idx][_class]
+        print("class:", net.cfg.dataset.class_names[_class])
+        print("ap_obj.data_points", ap_obj.data_points)
+        
+
+    
+    return all_class_maps, ap_data
+
 
 def print_maps(all_maps):
     # Warning: hacky 
