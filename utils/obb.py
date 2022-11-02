@@ -27,6 +27,8 @@ def get_obb_using_cv(contour, img=None):
     changing_width, changing_height = box_w_h(box)
     changing_rot = rect[2]
     
+    #  rotation is a bit funny, and we correct for it. see here:
+    # https://stackoverflow.com/questions/15956124/minarearect-angles-unsure-about-the-angle-returned
     if changing_height > changing_width:
         correct_rot = changing_rot
     else:
@@ -38,9 +40,10 @@ def get_obb_using_cv(contour, img=None):
         correct_height = changing_width
         correct_width = changing_height
     
-    # ! rotation is a bit funny, and we should correct for it. see here:
-    # https://stackoverflow.com/questions/15956124/minarearect-angles-unsure-about-the-angle-returned
-    
+    # if the width or height of the rectangle is 0, then we return None
+    if np.isclose(correct_height, 0.0) or np.isclose(correct_width, 0.0):
+        return None, None, None
+
     # clip so that the box is still in the bounds of the img
     if img is not None:
         # invert img.shape because points are x, y

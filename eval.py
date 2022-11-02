@@ -453,11 +453,30 @@ def _bbox_iou(bbox1, bbox2, iscrowd=False):
 def rot_measure(mask_a, mask_b):
     """
     Computes the rotation offset between the two masks
+
+    get_obb_from_mask returns rotation in degrees in (-90, 90]
+
+    For two angles x1, x2, largest difference | x1 - x2| is 180.
+
+    However the difference we want should be in [0, 90) because of symmetry of rectangles.
     """
-    _, _, rot_a = get_obb_from_mask(mask_a)
-    _, _, rot_b = get_obb_from_mask(mask_b)
+    corners_a, center_a, rot_a = get_obb_from_mask(mask_a)
+    corners_b, center_b, rot_b = get_obb_from_mask(mask_b)
+
+    if rot_a is None or rot_b is None:
+        return None, None, None
+
+    if np.isclose(rot_a, 0.0):
+        print("rot_a:", rot_a, "corners_a:", corners_a)
+
+    if np.isclose(rot_b, 0.0):
+        print("rot_b:", rot_b, "corners_b:", corners_b)
 
     rot_diff = np.abs(rot_a - rot_b)
+
+    # rotation difference should be in [0, 90) because we are dealing with rectangles
+    if rot_diff > 90:
+        rot_diff = 180 - rot_diff
 
     return rot_a, rot_b, rot_diff
 
@@ -609,11 +628,11 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                         rot_i, rot_j, rot_diff = rot_measure(mask_i, mask_j)
 
                         # todo: rot_diff is sometimes 0.0, why?
+                        if rot_diff is not None:
+                            print("rot_diff", rot_diff)
 
-                        print("rot_diff", rot_diff)
-
-                        ap_obj_rot = ap_data['rot'][iouIdx][_class]
-                        ap_obj_rot.push(rot_diff, True)
+                            ap_obj_rot = ap_data['rot'][iouIdx][_class]
+                            ap_obj_rot.push(rot_diff, True)
 
 
     timer.stop('Main loop')
@@ -987,7 +1006,7 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
     
     cleanup_and_exit()
 
-def evaluate(net:Yolact, dataset, train_mode=False):    
+def evaluate(net:Yolact, dataset, train_mode=False):
     net.eval()
 
     net.detect.use_fast_nms = args.fast_nms
@@ -1183,6 +1202,7 @@ def calc_map_classwise(net:Yolact, ap_data):
                 class_map[iou_type][int(threshold*100)] = mAP
             class_map[iou_type]['all'] = (sum(class_map[iou_type].values()) / (len(class_map[iou_type].values())-1))
         
+        # pretty results:
         print("class:", net.cfg.dataset.class_names[_class])
         print_maps(class_map)
         
@@ -1197,9 +1217,15 @@ def calc_map_classwise(net:Yolact, ap_data):
         
         ap_obj = ap_data[iou_type][iou_idx][_class]
         print("class:", net.cfg.dataset.class_names[_class])
-        print("ap_obj.data_points", ap_obj.data_points)
-        
 
+        rot_diffs = [i[0] for i in ap_obj.data_points]
+        # print("rot_diffs", rot_diffs)
+        
+        print("len", len(rot_diffs))
+        print("avg", np.round(np.mean(rot_diffs), 2))
+        print("std", np.round(np.std(rot_diffs), 2))
+        print("min", np.round(np.min(rot_diffs), 2))
+        print("max", np.round(np.max(rot_diffs), 2))
     
     return all_class_maps, ap_data
 
