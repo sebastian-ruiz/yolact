@@ -99,6 +99,8 @@ class Config(object):
         for k, v in vars(self).items():
             print(k, ' = ', v)
 
+    def as_dict(self):
+        return vars(self)
 
 
 

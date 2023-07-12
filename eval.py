@@ -606,33 +606,36 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                         if not matched_crowd:
                             ap_obj.push(score_func(i), False)
 
-                    if max_match_idx >= 0 and iou_type == "mask" and iouIdx == 0:
-                        # we get the best mask iou pair, and compute the rotation difference on this.
-                        # we only compute over the true positives 
 
-                        print("_class", _class)
-                        print("iou_threshold", iou_threshold)
-                        print("i", i)
-                        print("best matching gt: (max_match_idx)", max_match_idx) # best j
-                        print("max_iou_found", max_iou_found)
-                        
-                        # print("gt_used", gt_used)
+                    #! Seb's code for rotation eval
+                    if False:
+                        if max_match_idx >= 0 and iou_type == "mask" and iouIdx == 0:
+                            # we get the best mask iou pair, and compute the rotation difference on this.
+                            # we only compute over the true positives 
 
-                        # todo: now compute rotation difference between mask i and mask max_match_idx
-                        masks_np = masks.view(-1, h, w).detach().cpu().numpy().astype("uint8")
-                        gt_masks_np = gt_masks.view(-1, h, w).detach().cpu().numpy().astype("uint8")
+                            print("_class", _class)
+                            print("iou_threshold", iou_threshold)
+                            print("i", i)
+                            print("best matching gt: (max_match_idx)", max_match_idx) # best j
+                            print("max_iou_found", max_iou_found)
+                            
+                            # print("gt_used", gt_used)
 
-                        mask_i = masks_np[i]
-                        mask_j = gt_masks_np[max_match_idx]
+                            # todo: now compute rotation difference between mask i and mask max_match_idx
+                            masks_np = masks.view(-1, h, w).detach().cpu().numpy().astype("uint8")
+                            gt_masks_np = gt_masks.view(-1, h, w).detach().cpu().numpy().astype("uint8")
 
-                        rot_i, rot_j, rot_diff = rot_measure(mask_i, mask_j)
+                            mask_i = masks_np[i]
+                            mask_j = gt_masks_np[max_match_idx]
 
-                        # todo: rot_diff is sometimes 0.0, why?
-                        if rot_diff is not None:
-                            print("rot_diff", rot_diff)
+                            rot_i, rot_j, rot_diff = rot_measure(mask_i, mask_j)
 
-                            ap_obj_rot = ap_data['rot'][iouIdx][_class]
-                            ap_obj_rot.push(rot_diff, True)
+                            # todo: rot_diff is sometimes 0.0, why?
+                            if rot_diff is not None:
+                                print("rot_diff", rot_diff)
+
+                                ap_obj_rot = ap_data['rot'][iouIdx][_class]
+                                ap_obj_rot.push(rot_diff, True)
 
 
     timer.stop('Main loop')
@@ -1221,6 +1224,7 @@ def calc_map_classwise(net:Yolact, ap_data):
         rot_diffs = [i[0] for i in ap_obj.data_points]
         # print("rot_diffs", rot_diffs)
         
+        print("rot diffs:")
         print("len", len(rot_diffs))
         print("avg", np.round(np.mean(rot_diffs), 2))
         print("std", np.round(np.std(rot_diffs), 2))

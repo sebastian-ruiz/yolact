@@ -83,6 +83,8 @@ def parse_args(argv=None):
     parser.set_defaults(keep_latest=False, log=True, log_gpu=False, interrupt=True, autoscale=True)
     args = parser.parse_args(argv)
 
+    return args
+
 loss_types = ['B', 'C', 'M', 'P', 'D', 'E', 'S', 'I']
 
 better_names = {'B':'box_localization', 'C':'class_confidence', 'M':'mask', 'S': 'semantic_segmentation', 'T': 'total'}
@@ -110,12 +112,16 @@ class CustomDataParallel(nn.DataParallel):
     This is a custom version of DataParallel that works better with our training data.
     It should also be faster than the general case.
     """
+    def __init__(self, module, device_ids=None, output_device=None, dim=0, args=None):
+        # super().__init__(*args, **kwargs)
+        super(CustomDataParallel, self).__init__(module, device_ids, output_device, dim)
+        self.args = args
 
     def scatter(self, inputs, kwargs, device_ids):
         # More like scatter and data prep at the same time. The point is we prep the data in such a way
         # that no scatter is necessary, and there's no need to shuffle stuff around different GPUs.
         devices = ['cuda:' + str(x) for x in device_ids]
-        splits = prepare_data(inputs[0], devices, allocation=args.batch_alloc)
+        splits = prepare_data(inputs[0], devices, allocation=self.args.batch_alloc, args=self.args)
 
         return [[split[device_idx] for split in splits] for device_idx in range(len(devices))], \
             [kwargs] * len(devices)
@@ -129,6 +135,8 @@ class CustomDataParallel(nn.DataParallel):
         return out
 
 def train(yolact_net, override_args=None):
+
+    args = parse_args()
     
     # override the args from the ArgumentParser with override_args
     for key, val in override_args.items():
@@ -196,7 +204,7 @@ def train(yolact_net, override_args=None):
                             transform=SSDAugmentation(MEANS))
     
     if args.validation_epoch > 0:
-        setup_eval()
+        setup_eval(args)
         val_dataset = COCODetection(image_path=cfg.dataset.valid_images,
                                     info_file=cfg.dataset.valid_info,
                                     transform=BaseTransform(MEANS))
@@ -211,6 +219,11 @@ def train(yolact_net, override_args=None):
     if args.log:
         log = Log(cfg.name, args.log_folder, dict(args._get_kwargs()),
             overwrite=(args.resume is None), log_gpu_stats=args.log_gpu)
+        
+        # yolact_cf_dict = yolact_net.cfg.as_dict()
+        # print("yolact_cf_dict", yolact_cf_dict)
+        # log.log("session", )
+        
 
     # I don't use the timer during training (I use a different timing method).
     # Apparently there's a race condition with multiple GPUs, so disable it just to be safe.
@@ -245,7 +258,7 @@ def train(yolact_net, override_args=None):
             print('Error: Batch allocation (%s) does not sum to batch size (%s).' % (args.batch_alloc, args.batch_size))
             exit(-1)
 
-    net = CustomDataParallel(NetLoss(net, criterion))
+    net = CustomDataParallel(NetLoss(net, criterion), args=args)
     if args.cuda:
         net = net.cuda()
     
@@ -269,12 +282,13 @@ def train(yolact_net, override_args=None):
     data_loader = data.DataLoader(dataset, args.batch_size,
                                   num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate,
+                                  generator=torch.Generator(device='cuda'), 
                                   pin_memory=True)
     
     data_loader_val = data.DataLoader(val_dataset, args.batch_size,
                             num_workers=args.num_workers,
                             shuffle=True, collate_fn=detection_collate,
-                            # generator=torch.Generator(device='cuda'), 
+                            generator=torch.Generator(device='cuda'), 
                             pin_memory=True)
    
     
@@ -356,7 +370,8 @@ def train(yolact_net, override_args=None):
                 # Exclude graph setup from the timing information
                 if iteration != args.start_iter:
                     time_avg.add(elapsed)
-
+                
+                # print every 10 iterations
                 if iteration % 10 == 0:
                     eta_str = str(datetime.timedelta(seconds=(cfg.max_iter-iteration) * time_avg.get_avg())).split('.')[0]
                     
@@ -367,17 +382,19 @@ def train(yolact_net, override_args=None):
                             % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
 
                 if args.log:
+                    
                     precision = 5
                     loss_info = {k: round(losses[k].item(), precision) for k in losses}
                     loss_info['T'] = round(loss.item(), precision)
 
-                    if args.log_gpu:
-                        log.log_gpu_stats = (iteration % 10 == 0) # nvidia-smi is sloooow
-                        
-                    log.log('train', loss=loss_info, epoch=epoch, iter=iteration,
-                        lr=round(cur_lr, 10), elapsed=elapsed)
+                    # ! don't write to log every iteration
+                    # if args.log_gpu:
+                    #     log.log_gpu_stats = (iteration % 10 == 0) # nvidia-smi is sloooow
+                    
+                    # log.log('train', loss=loss_info, epoch=epoch, iter=iteration,
+                    #     lr=round(cur_lr, 10), elapsed=elapsed)
 
-                    log.log_gpu_stats = args.log_gpu
+                    # log.log_gpu_stats = args.log_gpu
                     
                     writer.add_scalars('train/iter', { better_names[key] : value for key, value in loss_info.items() }, iteration)
                 
@@ -410,18 +427,23 @@ def train(yolact_net, override_args=None):
                             
             # This is done per epoch
             if args.log:
+                precision = 5
+                loss_info = {k: round(losses[k].item(), precision) for k in losses}
+                loss_info['T'] = round(loss.item(), precision)
+                log.log('train', loss=loss_info, epoch=epoch, iter=iteration, lr=round(cur_lr, 10), elapsed=elapsed)
+                
                 writer.add_scalars('train/epoch', { better_names[key] : value for key, value in loss_info.items() }, epoch)
-                compute_validation_loss(epoch, net, data_loader_val, log if args.log else None, writer)
+                compute_validation_loss(epoch, net, data_loader_val, log if args.log else None, writer, args=args)
             
             # This is done per epoch
             if args.validation_epoch > 0:
-                if epoch % args.validation_epoch == 0 and epoch > 0:
+                if epoch % args.validation_epoch == 0: # and epoch > 0:
                     compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None, writer)
 
             writer.flush()
             
         # Compute validation mAP after training is finished
-        compute_validation_loss(epoch, net, data_loader_val, log if args.log else None, writer)
+        compute_validation_loss(epoch, net, data_loader_val, log if args.log else None, writer, args=args)
         compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None, writer)
     except KeyboardInterrupt:
         if args.interrupt:
@@ -450,7 +472,7 @@ def gradinator(x):
     x.requires_grad = False
     return x
 
-def prepare_data(datum, devices:list=None, allocation:list=None):
+def prepare_data(datum, devices:list=None, allocation:list=None, args=None):
     with torch.no_grad():
         if devices is None:
             devices = ['cuda:0'] if args.cuda else ['cpu']
@@ -504,7 +526,7 @@ def no_inf_mean(x:torch.Tensor):
         return x.mean()
 
 
-def compute_validation_loss(epoch, net, data_loader_val, log:Log=None, writer=None):
+def compute_validation_loss(epoch, net, data_loader_val, log:Log=None, writer=None, args=None):
     #Calculates the loss on the validation dataset.
     start = time.time()
     print()    
@@ -519,7 +541,7 @@ def compute_validation_loss(epoch, net, data_loader_val, log:Log=None, writer=No
         iterations = 0
         for datum in data_loader_val:
             # _losses = yolact_net.forward(datum)
-            print("val iteration", iterations, len(datum[0]))
+            # print("val iteration", iterations, len(datum[0]))
             
             # if the batch is smaller than the batch size, the forward pass crashes, don't know why this doesn't happen during training.
             if len(datum[0]) < args.batch_size:
@@ -556,9 +578,10 @@ def compute_validation_map(epoch, iteration, yolact_net, dataset, log:Log=None, 
         start = time.time()
         print()
         print("Computing validation mAP (this may take a while)...", flush=True)
-        val_info = eval_script.evaluate(yolact_net, dataset, train_mode=True)
+        # val_info = eval_script.evaluate(yolact_net, dataset, train_mode=True) #! edited!
+        val_info, _ = eval_script.evaluate(yolact_net, dataset, train_mode=True)
         end = time.time()
-
+        
         if log is not None:
             log.log('val', val_info, elapsed=(end - start), epoch=epoch, iter=iteration)
 
@@ -568,11 +591,11 @@ def compute_validation_map(epoch, iteration, yolact_net, dataset, log:Log=None, 
 
         yolact_net.train()
 
-def setup_eval():
+def setup_eval(args):
     eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
 
 if __name__ == '__main__':
-    parse_args(sys.argv)
+    args = parse_args(sys.argv)
     
     if args.config is not None:
         set_cfg(args.config)
