@@ -220,9 +220,8 @@ def train(yolact_net, override_args=None):
         log = Log(cfg.name, args.log_folder, dict(args._get_kwargs()),
             overwrite=(args.resume is None), log_gpu_stats=args.log_gpu)
         
-        # yolact_cf_dict = yolact_net.cfg.as_dict()
-        # print("yolact_cf_dict", yolact_cf_dict)
-        # log.log("session", )
+        yolact_dataset_dict = yolact_net.cfg.dataset.as_dict()
+        log.log("session", yolact_dataset_dict)
         
 
     # I don't use the timer during training (I use a different timing method).
