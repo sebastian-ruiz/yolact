@@ -1,7 +1,7 @@
 from tokenize import String
 from data.coco import COCODetection, get_label_map
 from yolact import Yolact
-from utils.augmentations import BaseTransform, FastBaseTransform, Resize
+from utils.augmentations import BaseTransform, FastBaseTransform, Resize, do_nothing
 from utils.functions import MovingAverage, ProgressBar
 from layers.box_utils import jaccard, center_size, mask_iou
 from utils import timer
@@ -40,7 +40,7 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-def parse_args(argv=[]):
+def parse_args(argv=[], args_override=None):
         
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
@@ -122,9 +122,13 @@ def parse_args(argv=[]):
                         benchmark=False, no_sort=False, no_hash=False, mask_proto_debug=False, crop=True, detect=False, display_fps=False,
                         emulate_playback=False)
 
-    global args
+    # global args
     args = parser.parse_args(args=argv)
     # args, unknown = parser.parse_known_args(argv)
+
+    if args_override is not None:
+        for key, value in args_override.items():
+            setattr(args, key, value)
 
     if args.output_web_json:
         args.output_coco_json = True
@@ -139,14 +143,9 @@ coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 
-def infer(net, img, override_args:Config=None):
+def infer(net, img, args=None):
     if isinstance(img, str):
         img = cv2.imread(img)
-    
-    args = parse_args()
-    if override_args is not None:
-      #override the command line args by the given arguments (type Config)
-      args = override_args
     
     with torch.no_grad():
         if args.cuda:
@@ -193,12 +192,7 @@ def postprocessing(dets_out, w, h, args):
         
     return classes, scores, boxes, masks
 
-def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alpha=0.45, fps_str='', override_args:Config=None):
-    
-    args = parse_args()
-    if override_args is not None:
-        #override the command line args by the given arguments (type Config)
-        args = override_args
+def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alpha=0.45, fps_str='', args=None):
 
     img_gpu = img / 255.0
     h, w, _ = img.shape
@@ -274,6 +268,7 @@ def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alp
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
     img_numpy = (img_gpu * 255).byte().cpu().numpy()
+    img_numpy = np.ascontiguousarray(img_numpy, dtype=np.uint8) #! added by Seb: bug fix
 
     if args.display_fps:
         # Draw the text on the CPU
@@ -315,16 +310,12 @@ def annotate_img(img, classes, scores, boxes, masks, class_color=False, mask_alp
     return img_numpy
 
 
-def prep_display(dets_out, img, h=None, w=None, class_color=False, mask_alpha=0.45, fps_str='', override_args:Config=None):
-    args = parse_args()
-    if override_args is not None:
-      #override the command line args by the given arguments (type Config)
-      args = override_args
+def prep_display(dets_out, img, h=None, w=None, class_color=False, mask_alpha=0.45, fps_str='', args=None):
       
     h, w, _ = img.shape
     classes, scores, boxes, masks = postprocessing(dets_out, w, h, args)
 
-    return annotate_img(img, classes, scores, boxes, masks, class_color, mask_alpha, fps_str, override_args=override_args)
+    return annotate_img(img, classes, scores, boxes, masks, class_color, mask_alpha, fps_str, args)
 
 
 def prep_benchmark(dets_out, h, w):
@@ -479,7 +470,7 @@ def rot_measure(mask_a, mask_b):
 
     return rot_a, rot_b, rot_diff
 
-def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, detections:Detections=None):
+def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, detections:Detections=None, args=None):
     """ Returns a list of APs for this image, with each element being for a class  """
     if not args.output_coco_json:
         with timer.env('Prepare gt'):
@@ -722,7 +713,7 @@ def badhash(x):
     x =  ((x >> 16) ^ x) & 0xFFFFFFFF
     return x
 
-def evalimage(net:Yolact, path:str, save_path:str=None, override_args=None):
+def evalimage(net:Yolact, path:str, save_path:str=None, args=None):
     """
     Evaluate a single image given:
     @argument net - Yolact object, the network
@@ -737,7 +728,7 @@ def evalimage(net:Yolact, path:str, save_path:str=None, override_args=None):
         batch = FastBaseTransform()(frame.unsqueeze(0))
         preds = net(batch)
 
-        img_numpy = prep_display(preds, frame, override_args=override_args)
+        img_numpy = prep_display(preds, frame, args=args)
 
         if args.display:
             plt.imshow(cv2.cvtColor(img_numpy, cv2.COLOR_BGR2RGB)) #matplotlib's imshow() needs image converted from BGR(cv2) to RGB(pyplot)
@@ -750,7 +741,7 @@ def evalimage(net:Yolact, path:str, save_path:str=None, override_args=None):
         return img_numpy
 
 
-def evalimages(net:Yolact, input_folder:str, output_folder:str):
+def evalimages(net:Yolact, input_folder:str, output_folder:str, args=None):
     if not os.path.exists(output_folder):
         os.mkdir(output_folder)
 
@@ -761,7 +752,7 @@ def evalimages(net:Yolact, input_folder:str, output_folder:str):
         name = '.'.join(name.split('.')[:-1]) + '.png'
         out_path = os.path.join(output_folder, name)
 
-        evalimage(net, path, out_path)
+        evalimage(net, path, out_path, args=args)
         print(path + ' -> ' + out_path)
     print('Done.')
 
@@ -774,7 +765,7 @@ class CustomDataParallel(torch.nn.DataParallel):
         # Note that I don't actually want to convert everything to the output_device
         return sum(outputs, [])
 
-def evalvideo(net:Yolact, path:str, out_path:str=None):
+def evalvideo(net:Yolact, path:str, out_path:str=None, args=None):
     # If the path is a digit, parse it as a webcam index
     is_webcam = path.isdigit()
     
@@ -850,7 +841,7 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
     def prep_frame(inp, fps_str):
         with torch.no_grad():
             frame, preds = inp
-            return prep_display(preds, frame, class_color=True, fps_str=fps_str, override_args=args)
+            return prep_display(preds, frame, class_color=True, fps_str=fps_str, args=args)
 
     frame_buffer = Queue()
     video_fps = 0
@@ -1011,29 +1002,35 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
 def evaluate(net:Yolact, dataset, train_mode=False):
     net.eval()
 
+    args = net.eval_args
+
     net.detect.use_fast_nms = args.fast_nms
     net.detect.use_cross_class_nms = args.cross_class_nms
     cfg=net.cfg
     cfg.mask_proto_debug = args.mask_proto_debug
 
+    if args.display:
+        if not os.path.exists('results'):
+            os.makedirs('results')
+
     # TODO Currently we do not support Fast Mask Re-scroing in evalimage, evalimages, and evalvideo
     if args.image is not None:
         if ':' in args.image:
             inp, out = args.image.split(':')
-            evalimage(net, inp, out)
+            evalimage(net, inp, out, args=args)
         else:
-            evalimage(net, args.image)
+            evalimage(net, args.image, args=args)
         return
     elif args.images is not None:
         inp, out = args.images.split(':')
-        evalimages(net, inp, out)
+        evalimages(net, inp, out, args=args)
         return
     elif args.video is not None:
         if ':' in args.video:
             inp, out = args.video.split(':')
-            evalvideo(net, inp, out)
+            evalvideo(net, inp, out, args=args)
         else:
-            evalvideo(net, args.video)
+            evalvideo(net, args.video, args=args)
         return
 
     frame_times = MovingAverage()
@@ -1076,51 +1073,62 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         # Main eval loop
         for it, image_idx in enumerate(dataset_indices):
             timer.reset()
+            with torch.no_grad():
+                with timer.env('Load Data'):
+                    img, gt, gt_masks, h, w, num_crowd = dataset.pull_item(image_idx)
+                    # this image may already be normalised
 
-            with timer.env('Load Data'):
-                img, gt, gt_masks, h, w, num_crowd = dataset.pull_item(image_idx)
+                    # Test flag, do not upvote
+                    if cfg.mask_proto_debug:
+                        with open('scripts/info.txt', 'w') as f:
+                            f.write(str(dataset.ids[image_idx]))
+                        np.save('scripts/gt.npy', gt_masks)
+
+                    img = img.permute(1, 2, 0)
+                    img = img.cuda().float()
+
+                    # img_numpy = img.cpu().numpy()
+                    # cv2.imwrite(f"./results/_img.jpg", img_numpy)
+
+                    if dataset.transform is None:
+                        batch = FastBaseTransform()(img.unsqueeze(0))
+                    else:
+                        batch = Variable(img.unsqueeze(0))
+
+                    if args.cuda:
+                        batch = batch.cuda()
+
+                with timer.env('Network Extra'):
+                    preds = net(batch)
+                # Perform the meat of the operation here depending on our mode.
+                if args.display:
+                    img_numpy = prep_display(preds, img, h, w, args=args)
+                elif args.benchmark:
+                    prep_benchmark(preds, h, w)
+                else:
+                    #! compute APs
+                    prep_metrics(ap_data, preds, img, gt, gt_masks, h, w, num_crowd, dataset.ids[image_idx], detections, args=args)
                 
-                #! img processed here
-
-                # Test flag, do not upvote
-                if cfg.mask_proto_debug:
-                    with open('scripts/info.txt', 'w') as f:
-                        f.write(str(dataset.ids[image_idx]))
-                    np.save('scripts/gt.npy', gt_masks)
-
-                batch = Variable(img.unsqueeze(0))
-                if args.cuda:
-                    batch = batch.cuda()
-
-            with timer.env('Network Extra'):
-                preds = net(batch)
-            # Perform the meat of the operation here depending on our mode.
-            if args.display:
-                img_numpy = prep_display(preds, img, h, w, override_args=args)
-            elif args.benchmark:
-                prep_benchmark(preds, h, w)
-            else:
-                #! compute APs
-                prep_metrics(ap_data, preds, img, gt, gt_masks, h, w, num_crowd, dataset.ids[image_idx], detections)
-            
-            # First couple of images take longer because we're constructing the graph.
-            # Since that's technically initialization, don't include those in the FPS calculations.
-            if it > 1:
-                frame_times.add(timer.total_time())
-            
-            if args.display:
+                # First couple of images take longer because we're constructing the graph.
+                # Since that's technically initialization, don't include those in the FPS calculations.
                 if it > 1:
-                    print('Avg FPS: %.4f' % (1 / frame_times.get_avg()))
-                plt.imshow(img_numpy)
-                plt.title(str(dataset.ids[image_idx]))
-                plt.show()
-            elif not args.no_bar:
-                if it > 1: fps = 1 / frame_times.get_avg()
-                else: fps = 0
-                progress = (it+1) / dataset_size * 100
-                progress_bar.set_val(it+1)
-                print('\rProcessing Images  %s %6d / %6d (%5.2f%%)    %5.2f fps        '
-                    % (repr(progress_bar), it+1, dataset_size, progress, fps), end='')
+                    frame_times.add(timer.total_time())
+                
+                if args.display:
+                    if it > 1:
+                        print('Avg FPS: %.4f' % (1 / frame_times.get_avg()))
+                    # plt.imshow(img_numpy)
+                    # plt.title(str(dataset.ids[image_idx]))
+                    # plt.show()
+                    is_saved = cv2.imwrite(f"results/{str(dataset.ids[image_idx])}.jpg", img_numpy)
+                    print("saved", is_saved)
+                elif not args.no_bar:
+                    if it > 1: fps = 1 / frame_times.get_avg()
+                    else: fps = 0
+                    progress = (it+1) / dataset_size * 100
+                    progress_bar.set_val(it+1)
+                    print('\rProcessing Images  %s %6d / %6d (%5.2f%%)    %5.2f fps        '
+                        % (repr(progress_bar), it+1, dataset_size, progress, fps), end='')
 
 
 
@@ -1249,7 +1257,7 @@ def print_maps(all_maps):
 
 
 if __name__ == '__main__':
-    parse_args()
+    args = parse_args()
 
     if args.config is not None:
         set_cfg(args.config)

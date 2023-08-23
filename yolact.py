@@ -51,7 +51,8 @@ class Yolact(nn.Module):
     def __init__(self,
                  config_override=None,
                  config_name="yolact_base_config",
-                 device_type="gpu"
+                 device_type="gpu",
+                 args_override=None
                  ):
         """
         @param config_name: string name of used config, choose from ./data/config.py, default "yolact_base"
@@ -68,7 +69,7 @@ class Yolact(nn.Module):
             self.cfg.replace(config_override)
         
         # eval args
-        self.eval_args = eval.parse_args()
+        self.eval_args = eval.parse_args(args_override=args_override)
         
         # override with args from cfg if present
         for key, val in self.cfg.__dict__.items():
@@ -378,9 +379,13 @@ class Yolact(nn.Module):
             return self.detect(pred_outs, self)
 
     def infer(self, img):
-        return eval.infer(self, img, override_args=self.eval_args)
+        return eval.infer(self, img, args=self.eval_args)
+    
+    def annotate_img(self, frame, classes, scores, boxes, masks):
+        return eval.annotate_img(frame, classes, scores, boxes, masks, args=self.eval_args)
 
-
+    def evaluate(self, val_dataset):
+        return eval.evaluate(self, val_dataset)
 
 # Some testing code
 if __name__ == '__main__':

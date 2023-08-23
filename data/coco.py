@@ -6,11 +6,12 @@ import torch.utils.data as data
 import torch.nn.functional as F
 import cv2
 import numpy as np
-from .config import cfg
+# from .config import cfg
 from pycocotools import mask as maskUtils
+from utils.augmentations import do_nothing
 import random
 
-def get_label_map():
+def get_label_map(cfg):
     if cfg.dataset.label_map is None:
         return {x+1: x+1 for x in range(len(cfg.dataset.class_names))}
     else:
@@ -20,8 +21,8 @@ class COCOAnnotationTransform(object):
     """Transforms a COCO annotation into a Tensor of bbox coords and label index
     Initilized with a dictionary lookup of classnames to indexes
     """
-    def __init__(self):
-        self.label_map = get_label_map()
+    def __init__(self, cfg):
+        self.label_map = get_label_map(cfg)
 
     def __call__(self, target, width, height):
         """
@@ -39,6 +40,7 @@ class COCOAnnotationTransform(object):
                 bbox = obj['bbox']
                 label_idx = obj['category_id']
                 if label_idx >= 0:
+                    # print("self.label_map", self.label_map)
                     label_idx = self.label_map[label_idx] - 1
                 final_box = list(np.array([bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]])/scale)
                 final_box.append(label_idx)
@@ -63,12 +65,12 @@ class COCODetection(data.Dataset):
 
     def __init__(self, image_path, info_file, transform=None,
                  target_transform=None,
-                 dataset_name='MS COCO', has_gt=True):
+                 dataset_name='MS COCO', has_gt=True, cfg=None):
         # Do this here because we have too many things named COCO
         from pycocotools.coco import COCO
         
         if target_transform is None:
-            target_transform = COCOAnnotationTransform()
+            target_transform = COCOAnnotationTransform(cfg)
 
         self.root = image_path
         self.coco = COCO(info_file)
@@ -78,7 +80,7 @@ class COCODetection(data.Dataset):
             self.ids = list(self.coco.imgs.keys())
         
         self.transform = transform
-        self.target_transform = COCOAnnotationTransform()
+        self.target_transform = COCOAnnotationTransform(cfg)
         
         self.name = dataset_name
         self.has_gt = has_gt
@@ -152,22 +154,25 @@ class COCODetection(data.Dataset):
         if self.target_transform is not None and len(target) > 0:
             target = self.target_transform(target, width, height)
 
-        if self.transform is not None:
-            if len(target) > 0:
-                target = np.array(target)
-                img, masks, boxes, labels = self.transform(img, masks, target[:, :4],
-                    {'num_crowds': num_crowds, 'labels': target[:, 4]})
+        transform = self.transform
+        if self.transform is None:
+            transform = do_nothing
+
+        if len(target) > 0:
+            target = np.array(target)
+            img, masks, boxes, labels = transform(img, masks, target[:, :4],
+                {'num_crowds': num_crowds, 'labels': target[:, 4]})
+        
+            # I stored num_crowds in labels so I didn't have to modify the entirety of augmentations
+            num_crowds = labels['num_crowds']
+            labels     = labels['labels']
             
-                # I stored num_crowds in labels so I didn't have to modify the entirety of augmentations
-                num_crowds = labels['num_crowds']
-                labels     = labels['labels']
-                
-                target = np.hstack((boxes, np.expand_dims(labels, axis=1)))
-            else:
-                img, _, _, _ = self.transform(img, np.zeros((1, height, width), dtype=np.float), np.array([[0, 0, 1, 1]]),
-                    {'num_crowds': 0, 'labels': np.array([0])})
-                masks = None
-                target = None
+            target = np.hstack((boxes, np.expand_dims(labels, axis=1)))
+        else:
+            img, _, _, _ = transform(img, np.zeros((1, height, width), dtype=np.float), np.array([[0, 0, 1, 1]]),
+                {'num_crowds': 0, 'labels': np.array([0])})
+            masks = None
+            target = None
 
         if target.shape[0] == 0:
             print('Warning: Augmentation output an example with no ground truth. Resampling...')
